@@ -32,12 +32,14 @@ async function timedFetch(url: string, init?: RequestInit): Promise<Fetched> {
   const t = setTimeout(() => ctrl.abort(), TIMEOUT_MS);
   const start = Date.now();
   try {
+    // NOTE: no `cache` field here — the Cloudflare Workers runtime doesn't
+    // implement it and throws if it's present. Subrequests aren't cached by
+    // default, which is what we want for a live scan.
     const res = await fetch(url, {
       ...init,
       signal: ctrl.signal,
       redirect: "follow",
       headers: { "user-agent": UA, accept: "*/*", ...(init?.headers || {}) },
-      cache: "no-store",
     });
     const buf = await res.arrayBuffer();
     const body = new TextDecoder("utf-8", { fatal: false }).decode(
