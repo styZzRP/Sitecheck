@@ -18,6 +18,9 @@ jobs:
     permissions:
       contents: read
       deployments: write
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -25,7 +28,7 @@ jobs:
       - name: Set up Node
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
       - name: Install dependencies
         run: npm install
@@ -33,18 +36,12 @@ jobs:
       - name: Build for Cloudflare Pages
         run: npm run pages:build
 
-      # Create the Pages project on first run. Ignored if it already exists.
+      # Create the Pages project on the first run. If it already exists,
+      # wrangler exits non-zero and we simply continue.
       - name: Ensure Pages project exists
-        continue-on-error: true
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages project create sitecheck --production-branch=${{ github.ref_name }}
+        run: |
+          npx wrangler pages project create sitecheck --production-branch=main \
+            || echo "Project 'sitecheck' already exists (or create was skipped) — continuing."
 
-      - name: Deploy
-        uses: cloudflare/wrangler-action@v3
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy --branch=${{ github.ref_name }} --commit-dirty=true
+      - name: Deploy to Cloudflare Pages
+        run: npx wrangler pages deploy --branch=main --commit-dirty=true
