@@ -3,6 +3,7 @@ import { ScanResult } from "@/components/ScanResult";
 import { ScanForm } from "@/components/ScanForm";
 import Link from "next/link";
 
+export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
 export default function ScanPage({

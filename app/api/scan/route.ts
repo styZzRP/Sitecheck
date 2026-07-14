@@ -1,9 +1,8 @@
 import { NextRequest, NextResponse } from "next/server";
 import { scan, normalizeUrl } from "@/lib/scanner";
 
-export const runtime = "nodejs";
+export const runtime = "edge";
 export const dynamic = "force-dynamic";
-export const maxDuration = 60;
 
 function isPublicHost(hostname: string): boolean {
   const h = hostname.toLowerCase();

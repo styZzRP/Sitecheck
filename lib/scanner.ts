@@ -135,7 +135,7 @@ export async function scan(rawUrl: string): Promise<ScanReport> {
       statusCode: main.res.status,
       server: headers.get("server") || undefined,
       title: getTitle(html),
-      htmlBytes: new Blob([html]).size,
+      htmlBytes: byteLength(html),
       responseMs: main.ms,
       scriptsAnalyzed: scriptBodies.length,
       https: isHttps,
@@ -835,7 +835,7 @@ function runHealth(h: Headers, html: string, main: Fetched, checks: CheckResult[
     aiPrompt: "Add Cache-Control headers: `public, max-age=31536000, immutable` for hashed static assets, and a short cache for HTML.",
   });
 
-  const bytes = new Blob([html]).size;
+  const bytes = byteLength(html);
   push(checks, {
     id: "health-pagesize",
     category: "health",
@@ -968,4 +968,8 @@ async function fetchText(url: string): Promise<string | null> {
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
+function byteLength(s: string): number {
+  return new TextEncoder().encode(s).length;
 }
