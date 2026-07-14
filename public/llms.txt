@@ -1,0 +1,17 @@
+# SiteCheck
+
+> A free scanner for vibe-coded apps. One URL in — security, SEO, AEO and site-health out, with a copy-paste AI fix for every issue. Every feature is free.
+
+## What it does
+
+- Security scan: exposed API keys in JS bundles, security headers, TLS, CORS/CSRF, Supabase/Firebase misconfig, exposed .env/.git.
+- SEO check: titles, meta, canonical, headings, structured data, robots, sitemap, social cards.
+- AEO scan: llms.txt, AI crawler access, extractable content, semantic HTML, Q&A schema.
+- Health: response time, compression, caching, document weight, script bloat.
+
+## Key pages
+
+- [Home](/): run a scan.
+- [Products](/products): the four scanners.
+- [Checks](/checks): full catalog of checks.
+- [Pricing](/pricing): everything is free.
