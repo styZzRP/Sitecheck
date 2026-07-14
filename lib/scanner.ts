@@ -91,7 +91,6 @@ export async function scan(rawUrl: string, opts: ScanOptions = {}): Promise<Scan
   const scope: ScanScope = opts.scope === "site" ? "site" : "page";
   const maxPages = Math.min(Math.max(opts.maxPages ?? MAX_SITE_PAGES, 1), MAX_SITE_PAGES);
   const url = normalizeUrl(rawUrl);
-  const origin = new URL(url).origin;
 
   let main: Fetched;
   try {
@@ -106,6 +105,9 @@ export async function scan(rawUrl: string, opts: ScanOptions = {}): Promise<Scan
   const headers = main.res.headers;
   const finalUrl = main.res.url || url;
   const isHttps = finalUrl.startsWith("https://");
+  // Derive the origin from the FINAL url (after redirects) so www/protocol
+  // redirects don't make same-origin link discovery reject everything.
+  const origin = new URL(finalUrl).origin;
 
   // ---- gather linked scripts (shared across pages) for secret scanning ----
   const scriptSrcs = getScriptSrcs(html)
