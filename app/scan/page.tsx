@@ -6,12 +6,12 @@ import Link from "next/link";
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
 
-export default function ScanPage({
+export default async function ScanPage({
   searchParams,
 }: {
-  searchParams: { url?: string };
+  searchParams: Promise<{ url?: string }>;
 }) {
-  const url = searchParams.url;
+  const { url } = await searchParams;
 
   if (!url) {
     return (
