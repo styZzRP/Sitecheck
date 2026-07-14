@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import type { ScanReport, Category, CheckResult } from "@/lib/types";
+import type { ScanReport, Category, CheckResult, ScanScope, PageResult } from "@/lib/types";
 import { CATEGORY_META, SEVERITY_META, STATUS_META, gradeColor, scoreColor } from "./severity";
 import { Icon } from "./Icon";
 import { CopyPrompt } from "./CopyPrompt";
@@ -21,19 +21,33 @@ const LOADING_STEPS = [
   "Compiling your report…",
 ];
 
-export function ScanResult({ url }: { url: string }) {
+const SITE_LOADING_STEPS = [
+  "Fetching the entry page…",
+  "Downloading JavaScript bundles…",
+  "Scanning for exposed secrets…",
+  "Reading the sitemap & internal links…",
+  "Crawling additional pages…",
+  "Grading SEO & metadata per page…",
+  "Measuring AI answer-engine visibility…",
+  "Auditing performance & health…",
+  "Compiling your site report…",
+];
+
+export function ScanResult({ url, scope = "page" }: { url: string; scope?: ScanScope }) {
   const [phase, setPhase] = useState<Phase>("loading");
   const [report, setReport] = useState<ScanReport | null>(null);
   const [error, setError] = useState<string>("");
   const [step, setStep] = useState(0);
 
+  const steps = scope === "site" ? SITE_LOADING_STEPS : LOADING_STEPS;
+
   useEffect(() => {
     let alive = true;
     setPhase("loading");
     setStep(0);
-    const timer = setInterval(() => setStep((s) => Math.min(s + 1, LOADING_STEPS.length - 1)), 700);
+    const timer = setInterval(() => setStep((s) => Math.min(s + 1, steps.length - 1)), scope === "site" ? 1100 : 700);
 
-    fetch(`/api/scan?url=${encodeURIComponent(url)}`)
+    fetch(`/api/scan?url=${encodeURIComponent(url)}&scope=${scope}`)
       .then(async (r) => {
         const data = await r.json();
         if (!alive) return;
@@ -56,15 +70,25 @@ export function ScanResult({ url }: { url: string }) {
       alive = false;
       clearInterval(timer);
     };
-  }, [url]);
+  }, [url, scope]);
 
-  if (phase === "loading") return <LoadingView url={url} step={step} />;
+  if (phase === "loading") return <LoadingView url={url} step={step} steps={steps} scope={scope} />;
   if (phase === "error") return <ErrorView url={url} error={error} />;
   if (report) return <ReportView report={report} />;
   return null;
 }
 
-function LoadingView({ url, step }: { url: string; step: number }) {
+function LoadingView({
+  url,
+  step,
+  steps,
+  scope,
+}: {
+  url: string;
+  step: number;
+  steps: string[];
+  scope: ScanScope;
+}) {
   return (
     <div className="container-x py-20">
       <div className="mx-auto max-w-xl text-center">
@@ -76,14 +100,18 @@ function LoadingView({ url, step }: { url: string; step: number }) {
           </span>
         </div>
         <h1 className="text-2xl font-bold text-white">Scanning {prettyHost(url)}</h1>
-        <p className="mt-2 font-mono text-sm text-brand-300">{LOADING_STEPS[step]}</p>
+        <p className="mt-2 font-mono text-sm text-brand-300">{steps[step]}</p>
         <div className="mt-6 h-1.5 w-full overflow-hidden rounded-full bg-white/10">
           <div
             className="h-full rounded-full bg-gradient-to-r from-brand-400 to-emerald-300 transition-all duration-700"
-            style={{ width: `${((step + 1) / LOADING_STEPS.length) * 100}%` }}
+            style={{ width: `${((step + 1) / steps.length) * 100}%` }}
           />
         </div>
-        <p className="mt-4 text-xs text-slate-500">Running 40+ live checks. This usually takes 10–20 seconds.</p>
+        <p className="mt-4 text-xs text-slate-500">
+          {scope === "site"
+            ? "Crawling and checking up to 12 pages. This usually takes 20–40 seconds."
+            : "Running 40+ live checks. This usually takes 10–20 seconds."}
+        </p>
       </div>
     </div>
   );
@@ -126,7 +154,12 @@ function ReportView({ report }: { report: ScanReport }) {
       {/* header */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
         <div>
-          <p className="text-xs uppercase tracking-widest text-slate-500">Scan report</p>
+          <div className="flex items-center gap-2">
+            <p className="text-xs uppercase tracking-widest text-slate-500">Scan report</p>
+            <span className="rounded-full border border-brand-400/30 bg-brand-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-brand-300">
+              {report.scope === "site" ? `Whole site · ${report.pagesCrawled} pages` : "Single page"}
+            </span>
+          </div>
           <h1 className="mt-1 text-2xl font-bold text-white break-all">{prettyHost(report.finalUrl)}</h1>
           <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-slate-500">
             <span className="inline-flex items-center gap-1">
@@ -211,8 +244,17 @@ function ReportView({ report }: { report: ScanReport }) {
         </label>
       </div>
 
+      {report.scope === "site" && (
+        <p className="mt-6 text-sm font-semibold text-white">
+          Site-wide checks
+          <span className="ml-2 font-normal text-slate-500">
+            security, TLS, secrets & infrastructure — shared across every page
+          </span>
+        </p>
+      )}
+
       {/* checks */}
-      <div className="mt-6 space-y-3">
+      <div className="mt-4 space-y-3">
         {filtered.length === 0 ? (
           <div className="card p-10 text-center text-slate-400">
             <Icon name="shield" className="mx-auto h-10 w-10 text-brand-400" />
@@ -224,6 +266,11 @@ function ReportView({ report }: { report: ScanReport }) {
         )}
       </div>
 
+      {/* per-page breakdown (site scope) */}
+      {report.pages && report.pages.length > 0 && (
+        <PagesSection pages={report.pages} onlyIssues={onlyIssues} />
+      )}
+
       {/* free banner */}
       <div className="mt-10 card border-brand-400/30 bg-brand-500/[0.06] p-6 text-center">
         <p className="text-sm font-semibold text-brand-200">
@@ -231,6 +278,72 @@ function ReportView({ report }: { report: ScanReport }) {
         </p>
         <p className="mt-1 text-xs text-slate-400">No paywall, no locked findings, no signup. Re-scan any time after you ship a fix.</p>
       </div>
+    </div>
+  );
+}
+
+function PagesSection({ pages, onlyIssues }: { pages: PageResult[]; onlyIssues: boolean }) {
+  return (
+    <div className="mt-10">
+      <p className="text-sm font-semibold text-white">
+        Pages scanned
+        <span className="ml-2 font-normal text-slate-500">
+          {pages.length} page{pages.length === 1 ? "" : "s"} — per-page SEO, AEO & performance
+        </span>
+      </p>
+      <div className="mt-4 space-y-3">
+        {pages.map((p, i) => (
+          <PageCard key={p.url + i} page={p} onlyIssues={onlyIssues} defaultOpen={i === 0} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PageCard({
+  page,
+  onlyIssues,
+  defaultOpen,
+}: {
+  page: PageResult;
+  onlyIssues: boolean;
+  defaultOpen: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const issues = page.checks.filter((c) => c.status === "fail" || c.status === "warn");
+  const shown = onlyIssues ? issues : page.checks;
+  return (
+    <div className="card overflow-hidden">
+      <button onClick={() => setOpen((o) => !o)} className="flex w-full items-center gap-3 p-4 text-left">
+        <span className={`text-xl font-black ${gradeColor(page.grade)}`}>{page.grade}</span>
+        <div className="min-w-0 flex-1">
+          <p className="truncate font-medium text-white">{pagePath(page.url)}</p>
+          <p className="text-xs text-slate-500">
+            <span className={scoreColor(page.score)}>{page.score}/100</span>
+            {issues.length > 0 ? (
+              <span className="ml-2 text-slate-400">
+                {issues.length} issue{issues.length === 1 ? "" : "s"}
+              </span>
+            ) : (
+              <span className="ml-2 text-brand-300">all clear</span>
+            )}
+          </p>
+        </div>
+        <span className={`shrink-0 text-slate-500 transition ${open ? "rotate-180" : ""}`}>
+          <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2.5">
+            <path d="m6 9 6 6 6-6" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </span>
+      </button>
+      {open && (
+        <div className="border-t border-white/10 p-3 space-y-2.5">
+          {shown.length === 0 ? (
+            <p className="px-1 py-2 text-sm text-slate-400">No issues on this page.</p>
+          ) : (
+            shown.map((c) => <CheckCard key={c.id} check={c} />)
+          )}
+        </div>
+      )}
     </div>
   );
 }
@@ -359,6 +472,16 @@ function prettyHost(url: string): string {
   try {
     const u = new URL(url);
     return u.host + (u.pathname !== "/" ? u.pathname : "");
+  } catch {
+    return url;
+  }
+}
+
+function pagePath(url: string): string {
+  try {
+    const u = new URL(url);
+    const path = u.pathname + u.search;
+    return path === "/" ? `${u.host}/` : path;
   } catch {
     return url;
   }

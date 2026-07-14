@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { scan, normalizeUrl } from "@/lib/scanner";
+import type { ScanScope } from "@/lib/types";
 
 export const runtime = "edge";
 export const dynamic = "force-dynamic";
@@ -18,7 +19,7 @@ function isPublicHost(hostname: string): boolean {
   return true;
 }
 
-async function handle(rawUrl: string) {
+async function handle(rawUrl: string, scope: ScanScope) {
   let normalized: string;
   try {
     normalized = normalizeUrl(rawUrl);
@@ -36,17 +37,21 @@ async function handle(rawUrl: string) {
     );
   }
   try {
-    const report = await scan(normalized);
+    const report = await scan(normalized, { scope });
     return NextResponse.json(report, { status: 200 });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message || "Scan failed." }, { status: 502 });
   }
 }
 
+function parseScope(v: string | null | undefined): ScanScope {
+  return v === "site" ? "site" : "page";
+}
+
 export async function GET(req: NextRequest) {
   const url = req.nextUrl.searchParams.get("url");
   if (!url) return NextResponse.json({ error: "Missing ?url= parameter." }, { status: 400 });
-  return handle(url);
+  return handle(url, parseScope(req.nextUrl.searchParams.get("scope")));
 }
 
 export async function POST(req: NextRequest) {
@@ -57,5 +62,5 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Invalid JSON body." }, { status: 400 });
   }
   if (!body?.url) return NextResponse.json({ error: "Missing 'url' in body." }, { status: 400 });
-  return handle(String(body.url));
+  return handle(String(body.url), parseScope(body.scope));
 }

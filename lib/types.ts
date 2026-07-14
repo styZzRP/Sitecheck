@@ -29,16 +29,32 @@ export interface CategoryScore {
   total: number;
 }
 
+export type ScanScope = "page" | "site";
+
+export interface PageResult {
+  url: string;
+  score: number;
+  grade: string;
+  counts: Record<Severity, number>;
+  categories: CategoryScore[];
+  checks: CheckResult[];
+}
+
 export interface ScanReport {
   url: string;
   finalUrl: string;
+  scope: ScanScope;
+  pagesCrawled: number;
   scannedAt: string;
   durationMs: number;
   overallScore: number;
   overallGrade: string;
   counts: Record<Severity, number>;
   categories: CategoryScore[];
+  /** Site-wide / origin-level checks (shared across every page). */
   checks: CheckResult[];
+  /** Per-page results. Present in "site" scope; each entry has its own checks. */
+  pages?: PageResult[];
   meta: {
     statusCode: number;
     server?: string;

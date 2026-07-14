@@ -9,9 +9,10 @@ export const dynamic = "force-dynamic";
 export default async function ScanPage({
   searchParams,
 }: {
-  searchParams: Promise<{ url?: string }>;
+  searchParams: Promise<{ url?: string; scope?: string }>;
 }) {
-  const { url } = await searchParams;
+  const { url, scope } = await searchParams;
+  const scanScope = scope === "site" ? "site" : "page";
 
   if (!url) {
     return (
@@ -32,7 +33,7 @@ export default async function ScanPage({
 
   return (
     <Suspense fallback={<div className="container-x py-20 text-center text-slate-400">Loading…</div>}>
-      <ScanResult url={url} />
+      <ScanResult url={url} scope={scanScope} />
     </Suspense>
   );
 }

@@ -2,10 +2,12 @@
 
 import { useRouter } from "next/navigation";
 import { useState } from "react";
+import type { ScanScope } from "@/lib/types";
 
 export function ScanForm({ big = false }: { big?: boolean }) {
   const router = useRouter();
   const [url, setUrl] = useState("");
+  const [scope, setScope] = useState<ScanScope>("page");
   const [error, setError] = useState<string | null>(null);
 
   function submit(e: React.FormEvent) {
@@ -16,7 +18,7 @@ export function ScanForm({ big = false }: { big?: boolean }) {
       return;
     }
     setError(null);
-    router.push(`/scan?url=${encodeURIComponent(v)}`);
+    router.push(`/scan?url=${encodeURIComponent(v)}&scope=${scope}`);
   }
 
   return (
@@ -54,10 +56,52 @@ export function ScanForm({ big = false }: { big?: boolean }) {
           </svg>
         </button>
       </div>
+
+      {/* Scope selector */}
+      <div className="mt-3 inline-flex rounded-xl border border-white/10 bg-ink-900/50 p-1 text-sm">
+        <ScopeOption
+          active={scope === "page"}
+          onClick={() => setScope("page")}
+          label="This page only"
+          hint="Fast — scans the URL you enter"
+        />
+        <ScopeOption
+          active={scope === "site"}
+          onClick={() => setScope("site")}
+          label="Whole site"
+          hint="Crawls up to 12 pages"
+        />
+      </div>
+
       {error && <p className="mt-2 text-sm text-rose-400">{error}</p>}
-      <p className="mt-3 text-xs text-slate-500">
+      <p className="mt-2 text-xs text-slate-500">
         No signup, no credit card. 100+ checks across security, SEO, AEO & health — free forever.
       </p>
     </form>
+  );
+}
+
+function ScopeOption({
+  active,
+  onClick,
+  label,
+  hint,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  hint: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={hint}
+      className={`rounded-lg px-3 py-1.5 font-medium transition ${
+        active ? "bg-brand-500 text-white" : "text-slate-300 hover:bg-white/5"
+      }`}
+    >
+      {label}
+    </button>
   );
 }

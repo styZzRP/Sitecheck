@@ -1,4 +1,13 @@
-import { CheckResult, ScanReport, Severity, CategoryScore, Category, CheckStatus } from "./types";
+import {
+  CheckResult,
+  ScanReport,
+  Severity,
+  CategoryScore,
+  Category,
+  CheckStatus,
+  ScanScope,
+  PageResult,
+} from "./types";
 import {
   getTitle,
   getMeta,
@@ -58,8 +67,29 @@ export function normalizeUrl(input: string): string {
   return parsed.toString();
 }
 
-export async function scan(rawUrl: string): Promise<ScanReport> {
+export interface ScanOptions {
+  scope?: ScanScope;
+  /** Max number of pages to scan in "site" scope (includes the entry page). */
+  maxPages?: number;
+}
+
+const MAX_SITE_PAGES = 12;
+
+/** Checks that apply to a single page's HTML (metadata, content, on-page). */
+function pageLevelChecks(html: string, pageUrl: string): CheckResult[] {
+  const checks: CheckResult[] = [];
+  runSeo(html, pageUrl, checks);
+  runSourceMap(html, checks);
+  runCsrf(html, checks);
+  runAeoPage(html, checks);
+  runHealthPage(html, checks);
+  return checks;
+}
+
+export async function scan(rawUrl: string, opts: ScanOptions = {}): Promise<ScanReport> {
   const started = Date.now();
+  const scope: ScanScope = opts.scope === "site" ? "site" : "page";
+  const maxPages = Math.min(Math.max(opts.maxPages ?? MAX_SITE_PAGES, 1), MAX_SITE_PAGES);
   const url = normalizeUrl(rawUrl);
   const origin = new URL(url).origin;
 
@@ -76,9 +106,8 @@ export async function scan(rawUrl: string): Promise<ScanReport> {
   const headers = main.res.headers;
   const finalUrl = main.res.url || url;
   const isHttps = finalUrl.startsWith("https://");
-  const checks: CheckResult[] = [];
 
-  // ---- gather linked scripts for secret scanning ----
+  // ---- gather linked scripts (shared across pages) for secret scanning ----
   const scriptSrcs = getScriptSrcs(html)
     .map((s) => absolutize(s, finalUrl))
     .filter((s): s is string => !!s && (s.startsWith("http://") || s.startsWith("https://")))
@@ -96,53 +125,155 @@ export async function scan(rawUrl: string): Promise<ScanReport> {
     })
   );
 
-  // ================= SECURITY =================
-  runSecurityHeaders(headers, isHttps, checks);
-  runTransport(finalUrl, headers, isHttps, checks);
-  runCookies(headers, isHttps, checks);
-  runInfoDisclosure(headers, html, checks);
-  runSecretScan(html, scriptBodies, checks);
-  runBaasChecks(html, scriptBodies, checks);
-  await runExposedPaths(origin, checks);
-  runCorsCsrf(headers, html, checks);
+  // ================= ORIGIN / SITE-WIDE CHECKS (run once) =================
+  const originChecks: CheckResult[] = [];
+  runSecurityHeaders(headers, isHttps, originChecks);
+  runTransport(finalUrl, headers, isHttps, originChecks);
+  runCookies(headers, isHttps, originChecks);
+  runTechDisclosure(headers, originChecks);
+  runSecretScan(html, scriptBodies, originChecks);
+  runBaasChecks(html, scriptBodies, originChecks);
+  await runExposedPaths(origin, originChecks);
+  runCors(headers, originChecks);
+  await runSeoFiles(origin, originChecks);
+  await runAeoOrigin(origin, originChecks);
+  runHealthOrigin(headers, main.ms, originChecks);
 
-  // ================= SEO =================
-  runSeo(html, finalUrl, checks);
-  await runSeoFiles(origin, checks);
+  const meta = {
+    statusCode: main.res.status,
+    server: headers.get("server") || undefined,
+    title: getTitle(html),
+    htmlBytes: byteLength(html),
+    responseMs: main.ms,
+    scriptsAnalyzed: scriptBodies.length,
+    https: isHttps,
+  };
 
-  // ================= AEO =================
-  await runAeo(html, origin, checks);
+  // ---------------- PAGE scope: single page ----------------
+  if (scope === "page") {
+    const allChecks = [...originChecks, ...pageLevelChecks(html, finalUrl)];
+    const s = computeScores(allChecks);
+    return {
+      url,
+      finalUrl,
+      scope,
+      pagesCrawled: 1,
+      scannedAt: new Date().toISOString(),
+      durationMs: Date.now() - started,
+      overallScore: s.overallScore,
+      overallGrade: s.overallGrade,
+      counts: s.counts,
+      categories: s.categories,
+      checks: allChecks,
+      meta,
+    };
+  }
 
-  // ================= HEALTH / PERF =================
-  runHealth(headers, html, main, checks);
+  // ---------------- SITE scope: crawl multiple pages ----------------
+  const entryChecks = pageLevelChecks(html, finalUrl);
+  const pages: PageResult[] = [makePageResult(finalUrl, entryChecks)];
 
-  // ---- scoring ----
-  const categories = scoreCategories(checks);
-  const counts = countSeverities(checks);
-  const overallScore = Math.round(
-    categories.reduce((a, c) => a + c.score, 0) / categories.length
+  const extraUrls = await discoverUrls(html, origin, finalUrl, maxPages - 1);
+  await Promise.all(
+    extraUrls.map(async (pageUrl) => {
+      try {
+        const f = await timedFetch(pageUrl);
+        if (f.res.status >= 200 && f.res.status < 400 && f.body) {
+          pages.push(makePageResult(f.res.url || pageUrl, pageLevelChecks(f.body, f.res.url || pageUrl)));
+        }
+      } catch {
+        /* skip unreachable pages */
+      }
+    })
   );
+
+  // Site-wide score aggregates origin checks + every page's checks.
+  const everything = [...originChecks, ...pages.flatMap((p) => p.checks)];
+  const s = computeScores(everything);
 
   return {
     url,
     finalUrl,
+    scope,
+    pagesCrawled: pages.length,
     scannedAt: new Date().toISOString(),
     durationMs: Date.now() - started,
-    overallScore,
-    overallGrade: grade(overallScore),
-    counts,
-    categories,
-    checks,
-    meta: {
-      statusCode: main.res.status,
-      server: headers.get("server") || undefined,
-      title: getTitle(html),
-      htmlBytes: byteLength(html),
-      responseMs: main.ms,
-      scriptsAnalyzed: scriptBodies.length,
-      https: isHttps,
-    },
+    overallScore: s.overallScore,
+    overallGrade: s.overallGrade,
+    counts: s.counts,
+    categories: s.categories,
+    checks: originChecks,
+    pages,
+    meta,
   };
+}
+
+function makePageResult(pageUrl: string, checks: CheckResult[]): PageResult {
+  const s = computeScores(checks);
+  return {
+    url: pageUrl,
+    score: s.overallScore,
+    grade: s.overallGrade,
+    counts: s.counts,
+    categories: s.categories,
+    checks,
+  };
+}
+
+// ---------------- crawl discovery ----------------
+function stripHash(u: string): string {
+  try {
+    const parsed = new URL(u);
+    parsed.hash = "";
+    return parsed.toString();
+  } catch {
+    return u;
+  }
+}
+
+function sameOrigin(u: string, origin: string): boolean {
+  try {
+    return new URL(u).origin === origin;
+  } catch {
+    return false;
+  }
+}
+
+const ASSET_EXT = /\.(?:js|mjs|css|png|jpe?g|gif|webp|avif|svg|ico|pdf|zip|gz|mp4|webm|mp3|woff2?|ttf|eot|xml|json|txt|rss|csv|map)(?:\?|#|$)/i;
+
+function isHtmlLikely(u: string): boolean {
+  return !ASSET_EXT.test(u);
+}
+
+async function discoverUrls(
+  html: string,
+  origin: string,
+  finalUrl: string,
+  max: number
+): Promise<string[]> {
+  if (max <= 0) return [];
+  const entry = stripHash(finalUrl);
+  const found = new Set<string>();
+
+  // Prefer the sitemap — it's the site's own list of important pages.
+  const sm = await fetchText(origin + "/sitemap.xml");
+  if (sm) {
+    const re = /<loc>\s*([^<\s]+)\s*<\/loc>/gi;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(sm))) {
+      const abs = absolutize(m[1], origin);
+      if (abs && sameOrigin(abs, origin) && isHtmlLikely(abs)) found.add(stripHash(abs));
+    }
+  }
+
+  // Fall back to (and supplement with) internal links on the entry page.
+  for (const href of getLinkHrefs(html)) {
+    const abs = absolutize(href, finalUrl);
+    if (abs && sameOrigin(abs, origin) && isHtmlLikely(abs)) found.add(stripHash(abs));
+  }
+
+  found.delete(entry);
+  return Array.from(found).slice(0, max);
 }
 
 // ---------------- helpers ----------------
@@ -327,7 +458,7 @@ function runCookies(h: Headers, https: boolean, checks: CheckResult[]) {
 }
 
 // ---------------- SECURITY: info disclosure ----------------
-function runInfoDisclosure(h: Headers, html: string, checks: CheckResult[]) {
+function runTechDisclosure(h: Headers, checks: CheckResult[]) {
   const leaky = ["server", "x-powered-by", "x-aspnet-version", "x-generator"]
     .map((k) => (h.get(k) ? `${k}: ${h.get(k)}` : null))
     .filter(Boolean) as string[];
@@ -346,7 +477,9 @@ function runInfoDisclosure(h: Headers, html: string, checks: CheckResult[]) {
     aiPrompt: "Remove the `X-Powered-By` header and any version-revealing headers (Server, X-AspNet-Version) from my app's responses.",
     evidence: leaky.length ? truncate(leaky.join(" · "), 160) : undefined,
   });
+}
 
+function runSourceMap(html: string, checks: CheckResult[]) {
   const sourceMap = /\/\/[#@]\s*sourceMappingURL=/.test(html);
   push(checks, {
     id: "sec-sourcemap",
@@ -504,8 +637,8 @@ async function runExposedPaths(origin: string, checks: CheckResult[]) {
   });
 }
 
-// ---------------- SECURITY: CORS / CSRF ----------------
-function runCorsCsrf(h: Headers, html: string, checks: CheckResult[]) {
+// ---------------- SECURITY: CORS (origin) ----------------
+function runCors(h: Headers, checks: CheckResult[]) {
   const acao = h.get("access-control-allow-origin");
   const acac = h.get("access-control-allow-credentials");
   const wildcardWithCreds = acao === "*" && acac === "true";
@@ -527,7 +660,10 @@ function runCorsCsrf(h: Headers, html: string, checks: CheckResult[]) {
     aiPrompt: "Fix my CORS config so it never uses `*` together with credentials; instead allow only my known front-end origins.",
     evidence: acao ? `ACAO: ${acao}${acac ? `, ACAC: ${acac}` : ""}` : undefined,
   });
+}
 
+// ---------------- SECURITY: CSRF (page) ----------------
+function runCsrf(html: string, checks: CheckResult[]) {
   const hasForm = /<form[\s>]/i.test(html);
   const hasCsrfToken = /csrf|xsrf|_token|authenticity_token/i.test(html);
   if (hasForm) {
@@ -716,8 +852,8 @@ async function runSeoFiles(origin: string, checks: CheckResult[]) {
   });
 }
 
-// ---------------- AEO ----------------
-async function runAeo(html: string, origin: string, checks: CheckResult[]) {
+// ---------------- AEO (origin) ----------------
+async function runAeoOrigin(origin: string, checks: CheckResult[]) {
   const llms = await headOk(origin + "/llms.txt");
   push(checks, {
     id: "aeo-llms",
@@ -748,7 +884,10 @@ async function runAeo(html: string, origin: string, checks: CheckResult[]) {
     remediation: "Decide deliberately: allow GPTBot/ClaudeBot/PerplexityBot if you want AI citations; block only if that's your intent.",
     aiPrompt: "Review my robots.txt for AI crawler rules (GPTBot, ClaudeBot, PerplexityBot, Google-Extended). I want to be cited by AI answer engines, so make sure they're allowed.",
   });
+}
 
+// ---------------- AEO (page) ----------------
+function runAeoPage(html: string, checks: CheckResult[]) {
   const faqSchema = /"@type"\s*:\s*"FAQPage"/i.test(html) || /"@type"\s*:\s*"QAPage"/i.test(html);
   push(checks, {
     id: "aeo-faq",
@@ -796,9 +935,8 @@ async function runAeo(html: string, origin: string, checks: CheckResult[]) {
   });
 }
 
-// ---------------- HEALTH / PERFORMANCE ----------------
-function runHealth(h: Headers, html: string, main: Fetched, checks: CheckResult[]) {
-  const ms = main.ms;
+// ---------------- HEALTH / PERFORMANCE (origin) ----------------
+function runHealthOrigin(h: Headers, ms: number, checks: CheckResult[]) {
   push(checks, {
     id: "health-ttfb",
     category: "health",
@@ -836,7 +974,10 @@ function runHealth(h: Headers, html: string, main: Fetched, checks: CheckResult[
     remediation: "Send long-lived, immutable Cache-Control on hashed static assets and a sensible policy on HTML.",
     aiPrompt: "Add Cache-Control headers: `public, max-age=31536000, immutable` for hashed static assets, and a short cache for HTML.",
   });
+}
 
+// ---------------- HEALTH / PERFORMANCE (page) ----------------
+function runHealthPage(html: string, checks: CheckResult[]) {
   const bytes = byteLength(html);
   push(checks, {
     id: "health-pagesize",
@@ -932,6 +1073,30 @@ function countSeverities(checks: CheckResult[]): Record<Severity, number> {
     else if (c.status === "warn") counts[c.severity === "info" ? "low" : c.severity]++;
   }
   return counts;
+}
+
+interface Scores {
+  categories: CategoryScore[];
+  overallScore: number;
+  overallGrade: string;
+  counts: Record<Severity, number>;
+}
+
+/** Score a set of checks. Overall averages only categories that have checks,
+ *  so page-level results (which lack e.g. security checks) aren't inflated. */
+function computeScores(checks: CheckResult[]): Scores {
+  const categories = scoreCategories(checks);
+  const nonEmpty = categories.filter((c) => c.total > 0);
+  const overallScore =
+    nonEmpty.length === 0
+      ? 100
+      : Math.round(nonEmpty.reduce((a, c) => a + c.score, 0) / nonEmpty.length);
+  return {
+    categories,
+    overallScore,
+    overallGrade: grade(overallScore),
+    counts: countSeverities(checks),
+  };
 }
 
 export function grade(score: number): string {
